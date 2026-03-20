@@ -59,10 +59,12 @@ static void createInputsForLLM(int seqLen, int hiddenSize, const std::string& at
     }
     inputs.push_back(attentionMask);
 
-    MNN::Express::VARP positionIds = MNN::Express::_Input({1, seqLen}, MNN::Express::NCHW, halide_type_of<int>());
+    MNN::Express::VARP positionIds = MNN::Express::_Input({3, seqLen}, MNN::Express::NCHW, halide_type_of<int>());
     int * positionIdsData = positionIds->writeMap<int>();
-    for (int i = 0; i < seqLen; i++) {
-        positionIdsData[i] = i;
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < seqLen; j++) {
+            positionIdsData[i*seqLen+j] = j;
+	}
     }
     inputs.push_back(positionIds);
 
