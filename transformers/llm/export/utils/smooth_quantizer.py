@@ -280,9 +280,11 @@ class SmoothQuantizer:
         if getattr(self.model.config, "attention_type", None) != "mix":
             return selected_kwargs
 
+        #print("_select_layer_kwargs---attention_mask--", attention_mask.dim(), attention_mask.shape)
         if isinstance(attention_mask, torch.Tensor) and attention_mask.dim() >= 1 and attention_mask.shape[0] == 2:
             layer_type = getattr(module, "layer_type", None)
             is_sliding = layer_type in ("linear_attention", "sliding_attention")
+            #print("is-instance---is_sliding: ", layer_type,  int(is_sliding))
             selected_kwargs["attention_mask"] = attention_mask[int(is_sliding)]
         return selected_kwargs
 
@@ -415,16 +417,19 @@ class SmoothQuantizer:
         layer_type = getattr(module, "layer_type", None)
 
         if model_type in ("qwen3_5", "qwen3_5_moe"):
-            if layer_type == "linear_attention" and hasattr(module, "linear_attn"):
+            # Handle linear_attention layer type
+            if layer_type == "linear_attention":
                 attn_ln = module.input_layernorm
-                linear_attn = module.linear_attn
+                # LinearAttention is registered as self_attn in Decoder
+                linear_attn = module.self_attn
                 fcs = []
                 for name in ("in_proj_qkv", "in_proj_a", "in_proj_b", "in_proj_z"):
                     fc = getattr(linear_attn, name, None)
                     if fc is not None:
                         fcs.append(fc)
-                if fcs and "linear_attn.in_proj_qkv" in self.act_scales[idx]:
-                    input_scales = self.act_scales[idx]["linear_attn.in_proj_qkv"]
+                # Use self_attn prefix instead of linear_attn
+                if fcs and "self_attn.in_proj_qkv" in self.act_scales[idx]:
+                    input_scales = self.act_scales[idx]["self_attn.in_proj_qkv"]
                     SmoothQuantizer.smooth_ln_fcs(attn_ln, fcs, input_scales, self.alpha)
                 return
 
@@ -786,7 +791,12 @@ class SmoothQuantizer:
                     continue
 
                 layer_act_dict = self.act_dict[layer_idx]
+
+                if "self_attn/in_proj_qkv" in op_name or "self_attn/in_proj_a" in op_name or "self_attn/in_proj_b" in op_name or "self_attn/in_proj_z" in op_name or "self_attn/out_proj" in op_name:
+                    op_name = op_name.replace("self_attn", "linear_attn")
+
                 matched_pt_name = self._find_match_in_dict(op_name, layer_act_dict)
+                #print("======op_name", op_name, "   ###matched_pt_name: ", matched_pt_name )
 
                 if matched_pt_name:
                     stats = layer_act_dict[matched_pt_name]
@@ -833,3 +843,4 @@ class SmoothQuantizer:
             json.dump(mnn, f, ensure_ascii=False, indent=4)
 
         return base_path
+

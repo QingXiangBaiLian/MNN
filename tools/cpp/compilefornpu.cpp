@@ -88,18 +88,18 @@ static void _computeTensorMask(SubModuleInfo& m, const Net* net) {
     }
 }
 static bool _npuSupportOp(const Op* op) {
+    if (op->type() == OpType_LinearAttention) {
+        auto attn = op->main_as_LinearAttentionParam();
+        if (nullptr != attn) {
+            return false;
+        }
+    }
     if (gMaxKVSize > 0) {
         return true;
     }
     if (op->type() == OpType_Attention) {
         auto attn = op->main_as_AttentionParam();
         if (nullptr != attn && attn->kv_cache()) {
-            return false;
-        }
-    }
-    if (op->type() == OpType_LinearAttention) {
-        auto attn = op->main_as_LinearAttentionParam();
-        if (nullptr != attn) {
             return false;
         }
     }
@@ -114,20 +114,10 @@ static bool isBreakOp(const Op* op) {
     if (op->type() == OpType_If || isWhileControlflow || op->type() == OpType_Where || op->type() == OpType_Segment || op->type() == OpType_Unique || op->type() == OpType_NonMaxSuppressionV2) {
         return true;
     }
-    //MNN_PRINT("****** current operation is: %s, %d \n", op->name()->c_str(), op->type());
     if (op->name() && (strstr(op->name()->c_str(), "pos_embed") != nullptr || strstr(op->name()->c_str(), "patch_embed") != nullptr)) {
         MNN_PRINT("######Skip position embedding operation on NPU: %s\n", op->name()->c_str());
         return true;
     }
-    //MNN_PRINT("---current-op-info----name: %s, type: %d \n", op->name()->c_str(), op->type());
-    if (op->name() && (strstr(op->name()->c_str(), "self_attn/in_proj_z/Linear") != nullptr )) {
-        MNN_PRINT("######Skip in_proj_z/Linear on NPU: %s\n", op->name()->c_str());
-        return true;
-    }
-    //if (op->name() && (strstr(op->name()->c_str(), "self_attn/norm/Mul_3_output_0") != nullptr )) {
-    //    MNN_PRINT("######Skip norm/Mul_3_output_0 on NPU: %s\n", op->name()->c_str());
-    //    return true;
-    //}
     if (!_npuSupportOp(op)) {
         return true;
     }

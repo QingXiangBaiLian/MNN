@@ -201,7 +201,7 @@ class LlmModel(PreTrainedModel):
             # sliding or full attn mask
             if self.config.attention_type == 'mix':
                 is_sliding = i in self.config.sliding_attn_layers
-                layer_attention_mask = attention_mask[int(is_sliding)]
+                layer_attention_mask = torch.index_select(attention_mask, 0, torch.tensor([int(is_sliding)], dtype=torch.int64)).squeeze(0)
             else:
                 layer_attention_mask = attention_mask
 

@@ -421,6 +421,9 @@ class LlmExporter(torch.nn.Module):
                 dynamic_axes=self.model_dynamic_axes)
             return onnx_model
 
+        if attention_mask.dim()>4:
+            self.model_dynamic_axes["attention_mask"] = { 3: "seq_len", 4: "seq_len" }
+
         # export to onnx
         onnx_export(
             model, (input_ids, attention_mask, position_ids, logits_index),

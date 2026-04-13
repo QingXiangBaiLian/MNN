@@ -57,9 +57,11 @@ def output_qnn(args):
     shutil.move(os.path.join(args.cache_path, 'qnn'), os.path.join(args.model, 'qnn'))
     config_npu = {
         "llm_model": "qnn/llm.mnn",
+        "visual_model": "qnn_visual/visual.mnn",
         "backend_type": "cpu",
-        "thread_num": 1,
         "precision": "low",
+        "thread_num": 4,
+        "tokenizer_file": "tokenizer.mtok",
         "chunk_limits":[args.chunk_size, 1],
         "memory": "low",
         "sampler_type": "penalty",

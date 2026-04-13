@@ -50,13 +50,20 @@ static void createInputsForLLM(int seqLen, int hiddenSize, const std::string& at
     }
     inputs.push_back(inputIdx);
 
-    MNN::Express::VARP attentionMask =  MNN::Express::_Input({1, 1, seqLen, seqLen}, MNN::Express::NCHW, halide_type_of<float>());
+    MNN::Express::VARP attentionMask =  MNN::Express::_Input({2, 1, 1, seqLen, seqLen}, MNN::Express::NCHW, halide_type_of<float>());
     float * attentionMaskData = attentionMask->writeMap<float>();
-    for (int i = 0; i < seqLen; ++i) {
-        for (int j = 0; j < seqLen; ++j) {
-            attentionMaskData[i * seqLen + j] = (j > i) * std::numeric_limits<float>::lowest();
+    for (int k = 0; k < 2; ++k) {
+        for (int i = 0; i < seqLen; ++i) {
+            for (int j = 0; j < seqLen; ++j) {
+                attentionMaskData[k * seqLen * seqLen + i * seqLen + j] = (j > i) * std::numeric_limits<float>::lowest();
+            }
         }
     }
+    //for (int i = 0; i < seqLen; ++i) {
+    //    for (int j = 0; j < seqLen; ++j) {
+    //        attentionMaskData[i * seqLen + j] = (j > i) * std::numeric_limits<float>::lowest();
+    //    }
+    //}
     inputs.push_back(attentionMask);
 
     MNN::Express::VARP positionIds = MNN::Express::_Input({3, seqLen}, MNN::Express::NCHW, halide_type_of<int>());
