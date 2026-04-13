@@ -1151,31 +1151,29 @@ VARP Llm::gen_attention_mask(int seq_len) {
     MNN::Express::ExecutorScope s(mExecutor);
     int kv_seq_len = mContext->all_seq_len + seq_len;
     if (mConfig->attention_mask() == "float") {
-        // full and sliding mix, using normal mask
+        // full and sliding mix, using square mask (kv_seq_len = seq_len)
+        // Attention op with kv_cache handles history internally
         if (mConfig->attention_type() == "mix") {
             const int sliding_window = mConfig->sliding_window();
+            kv_seq_len = seq_len;
             // mix attention mask
             attentionMask = _Input({2, 1, 1, seq_len, kv_seq_len}, NCHW, halide_type_of<float>());
             auto full_attn_ptr = attentionMask->writeMap<float>();
-            // full attn mask
+            // full attn mask (standard causal)
             for (int i = 0; i < seq_len; i++) {
-                const int query_pos = i + (kv_seq_len - seq_len);
                 for (int j = 0; j < kv_seq_len; j++) {
-                    if (j > query_pos) {
+                    if (j > i) {
                         full_attn_ptr[kv_seq_len * i + j] = std::numeric_limits<float>::lowest();
                     } else {
                         full_attn_ptr[kv_seq_len * i + j] = 0.0f;
                     }
                 }
             }
-            // sliding attn mask
+            // sliding attn mask (causal with window constraint within square)
             auto sliding_attn_ptr = full_attn_ptr + seq_len * kv_seq_len;
-            const int query_pos_offset = kv_seq_len - seq_len;
             for (int i = 0; i < seq_len; i++) {
-                const int query_pos = i + query_pos_offset;
                 for (int j = 0; j < kv_seq_len; j++) {
-                    const int key_pos = j;
-                    bool is_allowed = (key_pos <= query_pos) && (key_pos > query_pos - sliding_window);
+                    bool is_allowed = (j <= i) && (j > i - sliding_window);
                     if (is_allowed) {
                         sliding_attn_ptr[kv_seq_len * i + j] = 0.0f;
                     } else {

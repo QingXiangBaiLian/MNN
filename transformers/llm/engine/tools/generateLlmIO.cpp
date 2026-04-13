@@ -37,7 +37,7 @@ static void saveInputOutputs(const MNN::Express::Module::Info* info, std::vector
     MNN_PRINT("Successfully generate %s and %s.\n", inputPath.c_str(), outputPath.c_str());
 }
 
-static void createInputsForLLM(int seqLen, int hiddenSize, const std::string& attentionMaskType, bool lastLogit, std::vector<MNN::Express::VARP>& inputs) {
+static void createInputsForLLM(int seqLen, int hiddenSize, const std::string& attentionMaskType, bool lastLogit, const std::string& attentionType, bool isMrope, std::vector<MNN::Express::VARP>& inputs) {
     if (attentionMaskType != "float") {
         MNN_ERROR("Don't support Attention Mask Type other than 'float', currently.\n");
         return;
@@ -50,28 +50,37 @@ static void createInputsForLLM(int seqLen, int hiddenSize, const std::string& at
     }
     inputs.push_back(inputIdx);
 
-    MNN::Express::VARP attentionMask =  MNN::Express::_Input({2, 1, 1, seqLen, seqLen}, MNN::Express::NCHW, halide_type_of<float>());
-    float * attentionMaskData = attentionMask->writeMap<float>();
-    for (int k = 0; k < 2; ++k) {
-        for (int i = 0; i < seqLen; ++i) {
-            for (int j = 0; j < seqLen; ++j) {
-                attentionMaskData[k * seqLen * seqLen + i * seqLen + j] = (j > i) * std::numeric_limits<float>::lowest();
+    if (attentionType == "mix") {
+        // 5D mask: [2, 1, 1, seqLen, seqLen] for mix attention (full + sliding/linear)
+        MNN::Express::VARP attentionMask = MNN::Express::_Input({2, 1, 1, seqLen, seqLen}, MNN::Express::NCHW, halide_type_of<float>());
+        float * attentionMaskData = attentionMask->writeMap<float>();
+        for (int k = 0; k < 2; ++k) {
+            for (int i = 0; i < seqLen; ++i) {
+                for (int j = 0; j < seqLen; ++j) {
+                    attentionMaskData[k * seqLen * seqLen + i * seqLen + j] = (j > i) * std::numeric_limits<float>::lowest();
+                }
             }
         }
+        inputs.push_back(attentionMask);
+    } else {
+        // 4D mask: [1, 1, seqLen, seqLen] for full/sliding attention
+        MNN::Express::VARP attentionMask = MNN::Express::_Input({1, 1, seqLen, seqLen}, MNN::Express::NCHW, halide_type_of<float>());
+        float * attentionMaskData = attentionMask->writeMap<float>();
+        for (int i = 0; i < seqLen; ++i) {
+            for (int j = 0; j < seqLen; ++j) {
+                attentionMaskData[i * seqLen + j] = (j > i) * std::numeric_limits<float>::lowest();
+            }
+        }
+        inputs.push_back(attentionMask);
     }
-    //for (int i = 0; i < seqLen; ++i) {
-    //    for (int j = 0; j < seqLen; ++j) {
-    //        attentionMaskData[i * seqLen + j] = (j > i) * std::numeric_limits<float>::lowest();
-    //    }
-    //}
-    inputs.push_back(attentionMask);
 
-    MNN::Express::VARP positionIds = MNN::Express::_Input({3, seqLen}, MNN::Express::NCHW, halide_type_of<int>());
+    int posRows = isMrope ? 3 : 1;
+    MNN::Express::VARP positionIds = MNN::Express::_Input({posRows, seqLen}, MNN::Express::NCHW, halide_type_of<int>());
     int * positionIdsData = positionIds->writeMap<int>();
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < posRows; i++) {
         for (int j = 0; j < seqLen; j++) {
             positionIdsData[i*seqLen+j] = j;
-	}
+        }
     }
     inputs.push_back(positionIds);
 
@@ -134,6 +143,8 @@ static bool generateForModel(const std::string& modelPath, const std::string& ou
 
     int hiddenSize;
     std::string attentionMaskType;
+    std::string attentionType = "full";
+    bool isMrope = false;
     {
         std::ifstream ifs(jsonPath);
         if (!ifs.is_open()) {
@@ -161,6 +172,13 @@ static bool generateForModel(const std::string& modelPath, const std::string& ou
         }
         attentionMaskType = doc["attention_mask"].GetString();
 
+        if (doc.HasMember("attention_type") && doc["attention_type"].IsString()) {
+            attentionType = doc["attention_type"].GetString();
+        }
+        if (doc.HasMember("is_mrope") && doc["is_mrope"].IsBool()) {
+            isMrope = doc["is_mrope"].GetBool();
+        }
+
         isEmbedding = isEmbeddingModel(doc);
     }
 
@@ -187,7 +205,7 @@ static bool generateForModel(const std::string& modelPath, const std::string& ou
         if (isEmbedding) {
             createInputsForEmbedding(blockSize, hiddenSize, attentionMaskType, inputs);
         } else {
-            createInputsForLLM(blockSize, hiddenSize, attentionMaskType, false, inputs);
+            createInputsForLLM(blockSize, hiddenSize, attentionMaskType, false, attentionType, isMrope, inputs);
         }
         outputs = net->onForward(inputs);
         if (outputs.empty()) {
@@ -200,7 +218,7 @@ static bool generateForModel(const std::string& modelPath, const std::string& ou
     if (!isEmbedding) {
         std::vector<MNN::Express::VARP> inputs;
         std::vector<MNN::Express::VARP> outputs;
-        createInputsForLLM(1, hiddenSize, attentionMaskType, true, inputs);
+        createInputsForLLM(1, hiddenSize, attentionMaskType, true, attentionType, isMrope, inputs);
         outputs = net->onForward(inputs);
         if (outputs.empty()) {
             MNN_ERROR("Failed to run decode forward for QNN IO generation.\n");
