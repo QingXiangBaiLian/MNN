@@ -25,6 +25,7 @@ static std::string gOfflieDst;
 static std::string gGraphName = "graph";
 static std::string gCacheDir = "res";
 static MNNForwardType gNPUType = MNN_FORWARD_NN;
+static std::set<int> gHighDimTensorIndexes; // Tensor indices with rank > 4 (e.g., 5D attention masks)
 static bool initConstTensorsNoAlloc(std::vector<std::shared_ptr<Tensor>>& tensors, const Net* net) {
     bool valid    = true;
     tensors.resize(net->tensorName()->size());
@@ -269,6 +270,75 @@ static std::vector<SubModuleInfo> _splitSubModuleForShapeConst(const std::vector
     return res;
 }
 
+// Find ops in a submodule that consume tensors with rank > 4 (unsupported by QNN HTP).
+// These ops should be split out as break ops so they run on CPU.
+static std::vector<int> _findHighDimBreakIndex(const SubModuleInfo& info, const Net* net) {
+    if (gHighDimTensorIndexes.empty()) {
+        return {};
+    }
+    std::vector<int> res;
+    // Track which tensor indices become outputs of prior ops in this submodule.
+    // If an op's output has a high-dim input, but that output is produced within
+    // the same submodule (not a model-level high-dim input), skip it.
+    std::set<int> subModuleOutputs;
+    for (int v = 0; v < info.opList.size(); ++v) {
+        auto op = net->oplists()->GetAs<Op>(info.opList[v]);
+        bool usesHighDim = false;
+        if (nullptr != op->inputIndexes()) {
+            for (int i = 0; i < op->inputIndexes()->size(); ++i) {
+                auto index = op->inputIndexes()->data()[i];
+                // Only break if this tensor is a high-dim MODEL input (not produced within this submodule)
+                if (gHighDimTensorIndexes.count(index) && !subModuleOutputs.count(index)) {
+                    usesHighDim = true;
+                    break;
+                }
+            }
+        }
+        if (nullptr != op->outputIndexes()) {
+            for (int i = 0; i < op->outputIndexes()->size(); ++i) {
+                subModuleOutputs.insert(op->outputIndexes()->data()[i]);
+            }
+        }
+        if (usesHighDim) {
+            res.emplace_back(v);
+        }
+    }
+    return res;
+}
+
+static std::vector<SubModuleInfo> _splitSubModuleForHighDim(const std::vector<SubModuleInfo>& origin, const Net* net) {
+    std::vector<SubModuleInfo> res;
+    for (auto& m : origin) {
+        if (m.isBreak) {
+            res.emplace_back(std::move(m));
+            continue;
+        }
+        auto breakIndexes = _findHighDimBreakIndex(m, net);
+        if (breakIndexes.size() > 0) {
+            int current = 0;
+            for (auto breakIndex : breakIndexes) {
+                if (breakIndex > current) {
+                    SubModuleInfo m0;
+                    m0.opList.insert(m0.opList.begin(), m.opList.begin() + current, m.opList.begin() + breakIndex);
+                    res.emplace_back(std::move(m0));
+                }
+                SubModuleInfo m1;
+                m1.opList = {m.opList[breakIndex]};
+                res.emplace_back(std::move(m1));
+                current = breakIndex + 1;
+            }
+            if (current < (int)m.opList.size()) {
+                SubModuleInfo m2;
+                m2.opList.insert(m2.opList.begin(), m.opList.begin() + current, m.opList.end());
+                res.emplace_back(std::move(m2));
+            }
+        } else {
+            res.emplace_back(std::move(m));
+        }
+    }
+    return res;
+}
+
 static std::vector<SubModuleInfo> _createSubModuleInfo(const Net* net, const std::set<int>& inputIndexes, const std::set<int>& outputIndexes, const std::set<int>& noComputeIndexes, std::shared_ptr<Schedule::ScheduleInfo> sharedConst) {
     std::vector<SubModuleInfo> submodule;
     auto selectOps = _collectNeededOps(net, inputIndexes, outputIndexes);
@@ -304,6 +374,7 @@ static std::vector<SubModuleInfo> _createSubModuleInfo(const Net* net, const std
         submodule.emplace_back(std::move(current));
     }
     submodule = _splitSubModuleForShapeConst(submodule, net, sharedConst);
+    submodule = _splitSubModuleForHighDim(submodule, net);
     for (int moduleIndex=0; moduleIndex < submodule.size(); ++moduleIndex) {
         auto& m = submodule[moduleIndex];
         // Compute input / output
@@ -1010,6 +1081,25 @@ int main(int argc, const char* argv[]) {
             MNN_ERROR("[ %s ] ", iter.first.c_str());
         }
         MNN_ERROR("\n");
+    }
+    // Detect model inputs with rank > 4 (e.g., 5D attention masks for mix attention).
+    // QNN HTP does not support rank > 4 tensors. Ops consuming these are split out as break ops.
+    gHighDimTensorIndexes.clear();
+    if (!inputs.empty()) {
+        for (int i = 0; i < net->tensorName()->size(); ++i) {
+            auto tname = net->tensorName()->GetAsString(i)->str();
+            for (int j = 0; j < inputNames.size(); ++j) {
+                if (tname == inputNames[j] && j < inputs[0].size()) {
+                    auto info = inputs[0][j]->getInfo();
+                    if (info && info->dim.size() > 4) {
+                        gHighDimTensorIndexes.insert(i);
+                        MNN_PRINT("Detected high-dim input tensor [%s] (rank=%d), will split NPU submodules at ops consuming it\n",
+                                  tname.c_str(), (int)info->dim.size());
+                    }
+                    break;
+                }
+            }
+        }
     }
     auto firstInputIndex = inputIndexes;
     std::set<int> firstOutputIndex;
