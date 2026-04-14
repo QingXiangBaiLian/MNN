@@ -1670,8 +1670,11 @@ void QnnBackend::createContextAndGraph() {
 }
 
 void QnnBackend::finalizeGraph() {
-    // [TODO] Fix this. Add the following branch for empty resize.
     if (mTensorCounter == 0) {
+#ifdef ENABLE_QNN_CONVERT_MODE
+        // In CONVERT mode, still call graphFinalize to properly close the generated .cpp file.
+        CALL_QNN(mRuntime->mQnnInterface.graphFinalize(mQnnGraphHandle, nullptr, nullptr));
+#endif
         return;
     }
     #ifdef QNN_VERBOSE
